@@ -11,6 +11,7 @@ Kfactor_lookup <- fread(paste0('usgs_flood_frequency_imports/', 'Recurrence_inte
 # Import HCDN station table
 hcdn_simple <- fread(paste0('usgs_flood_frequency_imports/','hcdn_simple.csv'))
 hcdn_simple <- hcdn_simple[,':='(site_no = ifelse(site_no < 1e7, paste0('0',site_no), paste0(site_no)))]
+<<<<<<< HEAD
 
 
 
@@ -119,3 +120,5 @@ ggsave(ggarrange(plotlist = Q_recur_plots, align = 'hv', labels = c('A','B','C',
        filename = 'HCDN_runoff_recurrence_combined.pdf', useDingbats = F, onefile = F)
 
 
+=======
+>>>>>>> fb711bc724153e27e79568e81588e2dcc91d4410
