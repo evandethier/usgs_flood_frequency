@@ -2,123 +2,154 @@
 library(data.table)
 library(dataRetrieval)
 library(ggplot2)
+library(lubridate)
+library(e1071)
+library(smwrBase)
 
 #### IMPORT K FACTOR TABLE, SITE SELECTION TABLES ####    
-# Import K factor table for lookup value related to skewness, recurrence interval
+# Import K factor table for look-up value related to skewness, recurrence interval
 # From Haan, 1977
 Kfactor_lookup <- fread(paste0('usgs_flood_frequency_imports/', 'Recurrence_interval_Kfactor_lookup.csv'))
-
+recur_cols <- colnames(Kfactor_lookup)[-1]
 # Import HCDN station table
 hcdn_simple <- fread(paste0('usgs_flood_frequency_imports/','hcdn_simple.csv'))
 hcdn_simple <- hcdn_simple[,':='(site_no = ifelse(site_no < 1e7, paste0('0',site_no), paste0(site_no)))]
-<<<<<<< HEAD
 
 
+#### DOWNLOAD PEAK FLOW DATA ####
+# Select site
+# Androscoggin: 
+site_sel <- hcdn_simple[grepl(casefold('WHITE RIVER AT WEST HARTFORD, VT'), casefold(station_nm))]
+site_no_sel <- site_sel[,site_no]
 
-# # USGS stations with POC data
-#   setwd("/Users/evandethier/Documents/Dartmouth/IreneProject/IreneInsideWork/Irene_landsat/earthengine/earthengineDams/usa-hydrology/")
-#   station_df_poc <- read_csv('annual_p00689_q_avg_station_info.csv')
+# Download peak flow data from USGS for selected site
+Q_peak_sel_download <- data.table(readNWISpeak(site_no_sel)) # download peak flow data for given site
 
-# Of imported options, select table to find recurrence intervals for
-station_df_1 <- setDT(station_df_hcdn)
-station_info <- readNWISsite(station_df_1$site_no)
+# Rename columns
+Q_peak_sel <- Q_peak_sel_download[,':='(Q_cms = peak_va * 0.0283168,
+                             gage_height_m = gage_ht/3.28,
+                             month = month(peak_dt),
+                             water_year = calcWaterYear(peak_dt))]
 
-setwd("/Users/evandethier/Documents/Dartmouth/IreneProject/IreneInsideWork/Irene_landsat/earthengine/earthengineDams/usa-hydrology/")
+# Select columns
+Q_peak_sel <- Q_peak_sel[,.(agency_cd, site_no, peak_dt, water_year, month, Q_cms, gage_height_m)]
+# Plot data
+ggplot(Q_peak_sel, aes(x = water_year, y = Q_cms)) + 
+  geom_point() +
+  labs(
+    x = 'Year',
+    y = 'Annual peak discharge (m3/s)'
+  )
 
-# Select recurrence interval columns
-recur_cols <- colnames(Kfactor_lookup)[-1]
-# Add new columns for discharge corresponding to given recurrence interval
-station_df_2 <- setDT(station_info)
+# Plot distribution
+ggplot(Q_peak_sel, aes(x = Q_cms)) + 
+  geom_histogram(bins = 20) +
+  labs(
+    x = 'Year',
+    y = 'Annual peak discharge (m3/s)'
+  ) +
+  scale_x_log10()
 
-# Loop through sites with concavity data (not all sites have discharge data)
-for(i in 1:nrow(station_df_2)){
-  site_sel <- station_df_2$site_no[i] # select site for analysis
-  Qpeak_list_sel <- readNWISpeak(site_sel) # download peak flow data for given site
-  # Download average flow data for given site
-  Qavg_list_sel <- readNWISstat(siteNumbers = site_sel, parameterCd = '00060', statReportType="annual") 
-  Qavg_annual <- NA
-  if(!is.null(Qavg_list_sel)){
-    Qavg_annual <- mean(Qavg_list_sel$mean_va, na.rm = T) * 0.0283168}
-  
-  if(nrow(Qpeak_list_sel)>10){ # only proceed with analysis if > 10-year peak flow record exists
-    # some sites just have gage height (no peak flow) or have peaks of 0. find those.
-    Qpeak_list_sel <- setDT(Qpeak_list_sel)[!is.na(peak_va) & peak_va > 0]
-    if(nrow(Qpeak_list_sel)>10){ # reject sites with only gage height
-      Qpeak_list_sel[,Q_cms:= Qpeak_list_sel$peak_va * 0.0283168] # convert Q to cms
-      
-      # Log Pearson III calculation columns
-      Qpeak_list_sel <- Qpeak_list_sel[,
-                                       log_Q_cms := log(Qpeak_list_sel$Q_cms)][,
-                                                                               rank := rank(Q_cms)][, # rank among peak flows
-                                                                                                    return_period := (nrow(Qpeak_list_sel)+1)/rank][,
-                                                                                                                                                    exceed_prob := 1/return_period]
-      Qpeak_var <- var(Qpeak_list_sel$log_Q_cms) # variance
-      Qpeak_skew <- round(skewness(Qpeak_list_sel$log_Q_cms), 1) # skew
-      Qpeak_mean <- mean(Qpeak_list_sel$log_Q_cms) # log mean
-      
-      if(Qpeak_skew > 3){ # some skews are outside K table range. Identify and replace with max table value.
-        Qpeak_skew <- 3
-      } else if(Qpeak_skew < -3){
-        Qpeak_skew <- -3
-      }
-      # Look up K value from K factor table 
-      K_factor_sel <- Kfactor_lookup[which(Qpeak_skew == Kfactor_lookup$Cw), ..recur_cols]
-      
-      # Calculate Q for recurrence intervals (1, 2, 5, 10, 25, 50, 100, 200 yrs)
-      Recurrence_Qs <- exp(Qpeak_mean + K_factor_sel * sqrt(Qpeak_var))
-      # Add Q for selected recurrence intervals to row of dataframe with that data
-      station_df_2[i,c(recur_cols) := Recurrence_Qs][i, # add recurrence data
-                                                     Qavg := Qavg_annual # add annual average Q (cms)
-      ]
-      # [Optional] print calculated line for checking
-      print(cbind(station_df_2[i, c('site_no', 'station_nm')], Recurrence_Qs, Qavg_annual))
-    }}}
+#### FLOOD FREQUENCY ANALYSIS ####
+# Remove NA values
+Q_peak_sel <- Q_peak_sel[!is.na(Q_cms)]
 
-# Convert drainage area, mi2 to km2
-station_df_2[,drainage_area_km2 := drain_area_va * 2.58999]
+#### SIMPLE RECURRENCE INTERVAL CALCULATION ####
+# Log-transformed discharge, rank among peak flows
+Q_peak_sel <- Q_peak_sel[,':='(log_Q_cms = log(Q_cms),
+                               rank = rank(-Q_cms))]
 
-# Write file to disk
-fwrite(station_df_2, file = 'hcdn_rivers_recurrence.csv')
+# Count number of years in the record
+years_of_record <- nrow(Q_peak_sel)
 
-# Select column for plotting
-Q_recur_plots <- list()
-for(i in 1:4){
-  # Select plot recurrence interval
-  col_sel_plot <- c('2 yr', '5 yr', '10 yr', '25 yr')[i]
-  col_sel_save <- c('2yr', '5yr', '10yr', '25yr')[i]
-  Q_recur_runoff_plot <- ggplot(na.omit(station_df_2, cols = col_sel_plot),
-                                # %>% subset(substr(huc_cd, start = 1, stop = 2) == '01'), 
-                                aes(x = dec_long_va, y = dec_lat_va, 
-                                    color = !!sym(col_sel_plot)/drainage_area_km2 * 86.4)) + 
-    geom_map(data = us_ca, map = us_ca, 
-             aes(map_id = id, x = long, y = lat),
-             color = "grey30", fill = 'white', lwd = 0.25) +
-    geom_point(size = 1.5) + 
-    theme_evan +
-    scale_x_continuous(limits = c(-160,-66)) + 
-    scale_y_continuous(limits = c(25,65)) + 
-    scale_color_gradientn(limits = c(0,200), colors = c('#D1B660', '#049CBF','#0468BF'), oob = squish) +
-    theme(legend.position = 'right') +
-    labs(
-      x = 'Longitude',
-      y = 'Latitude', 
-      # color = expression(paste('Runoff (m'^'3'*'/s / km'^'2'*')')),
-      color = expression(paste('Runoff (mm d'^'-1'*')')),
-      title = paste0(col_sel_plot, ' recurrence runoff')
-    ) 
-  
-  # Save plot
-  ggsave(Q_recur_runoff_plot, filename = paste0('HCDN_runoff_', col_sel_save,'_recurrence.pdf'), 
-         width = 7, height = 5, useDingbats = F)
-  Q_recur_plots[[i]] <- Q_recur_runoff_plot
-}
+# Plot flow by rank
+ggplot(Q_peak_sel, aes(x = rank, y = Q_cms)) + 
+  geom_point() +
+  labs(
+    x = 'Rank',
+    y = 'Annual peak discharge (m3/s)'
+  )
 
-# Save aggregate plot of multiple recurrences
-ggsave(ggarrange(plotlist = Q_recur_plots, align = 'hv', labels = c('A','B','C','D'),
-                 common.legend = T), 
-       width = 8, height = 6,
-       filename = 'HCDN_runoff_recurrence_combined.pdf', useDingbats = F, onefile = F)
+# Calculate return period (also called recurrence interval)
+# and exceedence probability: probability that discharge of given size will be exceeded in a year
+Q_peak_sel <- Q_peak_sel[,':='(return_period = (years_of_record + 1)/rank)]
+Q_peak_sel <- Q_peak_sel[,':='(exceed_prob = 1/return_period)]
+
+# Plot exceedence probability for each discharge
+ggplot(Q_peak_sel, aes(x = return_period, y = Q_cms)) + 
+  geom_point() +
+  labs(
+    x = 'Return period (years)',
+    y = 'Annual peak discharge (m3/s)'
+  ) +
+  scale_x_log10() +
+  scale_y_log10()
 
 
-=======
->>>>>>> fb711bc724153e27e79568e81588e2dcc91d4410
+#### LOG PEARSON III RECURRENCE INTERVAL CALCULATION ####
+Q_peak_sel <- Q_peak_sel[,':='(return_period = (nrow(peakQ)+1)/rank)]
+
+# Make vector of log-transformed discharge
+peakQ_ln <- Q_peak_sel[,log_Q_cms]
+# Take mean, std. deviation, and skewness of log-transformed discharge
+peakQ_ln_avg <- mean(peakQ_ln, na.rm = T)
+peakQ_ln_sd <- sd(peakQ_ln, na.rm = T)
+peakQ_ln_skew <- skewness(peakQ_ln, na.rm = T)
+
+# Make a vector of recurrences to calculate
+recurrences_to_calculate <- seq(0.01,0.999,0.001)
+
+# Log Pearson III -- recurrence calculation
+logPearsonIII <- qlpearsonIII(recurrences_to_calculate, peakQ_ln_avg, peakQ_ln_sd, peakQ_ln_skew)
+logPearsonIII_qpeaks <- data.table(probabilities = recurrences_to_calculate,
+                                   return_period = 1/(1-recurrences_to_calculate), 
+                                   Q_cms = logPearsonIII)
+
+# Standard deviations away from mean
+distribution_min_4SDs <- peakQ_ln_avg - 4*peakQ_ln_sd
+distribution_max_4SDs <- peakQ_ln_avg + 4*peakQ_ln_sd
+
+SD8_range <- seq(distribution_min_4SDs,distribution_max_4SDs,0.01)
+
+logPearsonIII_density_sel <- data.table(
+  log_Q_cms = SD8_range,
+  probabilities = dpearsonIII(x = SD8_range, mean = peakQ_ln_avg, sd = peakQ_ln_sd, skew = peakQ_ln_skew)
+)
+
+
+density_sel <- data.table(log_Q_cms = SD8_range,
+                      probabilities = dnorm(SD8_range, peakQ_ln_avg, peakQ_ln_sd)
+)
+
+ggplot() +
+  geom_histogram(data = Q_peak_sel, aes(x = log_Q_cms, y = ..density..)) + 
+  geom_line(data = density_sel, aes(x = SD8_range, y = probabilities, color = 'Log-normal')) +
+  geom_line(data = logPearsonIII_density_sel, aes(x = log_Q_cms, y = probabilities, color = 'Log Pearson III')) +
+  geom_vline(xintercept = peakQ_ln_avg, lty = 'dashed') +
+  scale_color_manual(values = c('Log-normal' = 'blue', 'Log Pearson III' = 'orange')) +
+  # stat_function(fun = dnorm, n = 101, args = list(mean = peakQ_ln_avg, sd = peakQ_ln_sd)) +
+  labs(
+    x = 'ln(Q)',
+    y = 'Density'
+  )
+
+# Calculate recurrence intervals based on log-normal distribution
+log_normal <- qlnorm(recurrences_to_calculate, peakQ_ln_avg, peakQ_ln_sd)
+log_normal_qpeaks <- data.table(return_period = 1/(1-recurrences_to_calculate), Q_cms = log_normal)
+
+# Plot recurrence intervals based on different approaches
+recurrence_plot <- ggplot(Q_peak_sel, aes(x = return_period, y = Q_cms)) + 
+  geom_point() + 
+  geom_smooth(method = 'lm', se = F, aes(color = 'Linear regression'), lwd = 0.5, fullrange = T) +
+  geom_line(data = logPearsonIII_qpeaks, aes(color = 'Log Pearson III'), lwd = 0.5) +
+  geom_line(data = log_normal_qpeaks, aes(color = 'Normal'), lwd = 0.5) +
+  scale_color_manual(values = c('Normal' = 'blue', 'Log Pearson III' = 'orange', 'Linear regression' = 'red')) +
+  theme_classic() +
+  scale_x_log10() +
+  labs(
+    x = 'Recurrence',
+    y = 'Discharge (1,000s cfs)',
+    color = 'Model'
+  )
+
+
